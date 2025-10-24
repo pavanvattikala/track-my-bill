@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 🧾 AI Bill Tracker
 
-## Getting Started
+This is a **mobile-first web application** designed to automatically extract key financial data from uploaded receipts, bills, or invoices using the Perplexity AI `sonar` model with structured JSON output.
 
-First, run the development server:
+Users can upload an image or PDF (or take a photo on mobile) and instantly get extracted data fields like the amount, vendor, date, category, and notes.
+
+## ✨ Features
+
+* **Mobile-Optimized Interface**: Clean, responsive design built with Tailwind CSS for seamless mobile use.
+* **Intelligent Data Extraction**: Utilizes the Perplexity API with a JSON schema to ensure accurate, structured output.
+* **Multi-Format Support**: Supports common receipt formats including **Images** (JPEG, PNG) and **Documents** (PDF, DOCX, TXT, RTF).
+* **Structured Output**: Extracts five key fields:
+    * `amount` (The total cost)
+    * `vendor` (Short company name)
+    * `date` (Date of purchase in YYYY-MM-DD format)
+    * `category` (e.g., food, travel, cosmetics)
+    * `notes` (A short description)
+
+---
+
+## 🚀 Getting Started
+
+Follow these steps to set up and run the project locally.
+
+### Prerequisites
+
+You must have the following installed:
+
+* **Node.js** (v18 or higher)
+* **npm** or **Yarn**
+* A **Perplexity API Key** (You can obtain one by signing up on the Perplexity website).
+
+### 1. Clone the Repository
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
-
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+git clone <your-repository-url>
+cd ai-bill-tracker
