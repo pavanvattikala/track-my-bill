@@ -33,5 +33,5 @@ You must have the following installed:
 ### 1. Clone the Repository
 
 ```bash
-git clone <your-repository-url>
-cd ai-bill-tracker
+git clone https://github.com/pavanvattikala/track-my-bill.git
+cd track-my-bill
