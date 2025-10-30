@@ -1,6 +1,25 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { google } from "googleapis";
+import { Buffer } from 'buffer';
 
+// --- MIME TYPE HELPERS ---
+const isImageMimeType = (mimeType: string): boolean => {
+  return mimeType.startsWith("image/");
+};
+
+const isSupportedDocumentMimeType = (mimeType: string): boolean => {
+  // Allow other document types for the 'file_url' (Document) pipeline
+  const supportedDocs = [
+    "application/msword", // .doc
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+    "text/plain", // .txt
+    "application/rtf", // .rtf
+    "application/pdf", // .pdf
+  ];
+  return supportedDocs.includes(mimeType) || mimeType.startsWith("text/");
+};
+
+// --- Perplexity AI Configuration ---
 const EXTRACTION_SCHEMA = {
   type: "object",
   properties: {
@@ -29,143 +48,166 @@ const EXTRACTION_SCHEMA = {
 };
 
 
-const isImageMimeType = (mimeType: string): boolean => {
-  return mimeType.startsWith("image/");
-};
+const PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions";
+const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY; 
 
-const isSupportedDocumentMimeType = (mimeType: string): boolean => {
-  const supportedDocs = [
-    "application/pdf", // .pdf
-    "application/msword", // .doc
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
-    "text/plain", // .txt
-    "application/rtf", // .rtf
-  ];
-  return supportedDocs.includes(mimeType) || mimeType.startsWith("text/");
-};
-
-export async function POST(request: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const formData = await request.formData();
-    const file = formData.get("file") as File;
+    if (!PERPLEXITY_API_KEY) {
+        return NextResponse.json(
+          { success: false, error: "PERPLEXITY_API_KEY is not set in environment variables." }, 
+          { status: 500 }
+        );
+    }
+    
+    // 1. Get the Access Token and File ID from the request body
+    const body = await req.json();
+    const fileId = body.fileId;
 
-    if (!file) {
-      return NextResponse.json(
-        { success: false, error: "No file provided." },
-        { status: 400 }
-      );
+    const fileType = body.fileType as string | undefined;
+
+    if (!fileType) {
+        return NextResponse.json({ success: false, error: "Missing file type in request." }, { status: 400 });
     }
 
-    const fileBuffer = await file.arrayBuffer();
-    const base64File = Buffer.from(fileBuffer).toString("base64");
-    const mimeType = file.type;
-    const fileName = file.name;
+    console.log(`Received file type: ${fileType}`);
 
+    if (!fileId) {
+        return NextResponse.json({ success: false, error: "Missing file ID for extraction." }, { status: 400 });
+    }
+
+    // 2. Initialize Google Drive client to download the file
+    const accessToken = req.headers.get('Authorization')?.split(' ')[1];
+
+    if (!accessToken) {
+        return NextResponse.json({ success: false, error: "Authentication required to access file data." }, { status: 401 });
+    }
+
+    const auth = new google.auth.OAuth2();
+    auth.setCredentials({ access_token: accessToken });
+    const drive = google.drive({ version: 'v3', auth });
+    
+    // 3. Get file metadata (MIME type) and download the raw content
+    const driveRes = await drive.files.get({
+        fileId: fileId,
+        alt: 'media', // Request the raw file content
+        fields: 'mimeType'
+    }, {
+        responseType: 'arraybuffer'
+    });
+
+    const originalMimeType = fileType;
+    const fileBuffer = Buffer.from(driveRes.data as ArrayBuffer);
+
+    console.log(`File MIME type: ${originalMimeType}, Size: ${fileBuffer.length} bytes`);
+
+    // 4. Check size limit
+    const MAX_BUFFER_SIZE = 25 * 1024 * 1024; // 25 MB
+    if (fileBuffer.length > MAX_BUFFER_SIZE) {
+         return NextResponse.json(
+            { success: false, error: "File size exceeds the 25MB processing limit. Please upload a smaller file." },
+            { status: 413 }
+        );
+    }
+
+    const base64File = fileBuffer.toString('base64');
     let attachmentContent;
     
-    if (isImageMimeType(mimeType)) {
+    if (isImageMimeType(originalMimeType)) {
+      // Images are treated as visual content using the base64 data URI
       attachmentContent = {
         type: "image_url",
         image_url: {
-          url: `data:${mimeType};base64,${base64File}`, 
+          url: `data:${originalMimeType};base64,${base64File}`, 
         },
       };
-      console.log(`Processing as image: ${mimeType}`);
-    } else if (isSupportedDocumentMimeType(mimeType)) {
-
+      console.log(`Processing as image: ${originalMimeType}`);
+      
+    } else if (isSupportedDocumentMimeType(originalMimeType)) {
+      // DOCX, TXT, etc., are passed as a file URL (base64) for document processing
       attachmentContent = {
         type: "file_url",
         file_url: {
           url: base64File, 
         },
       };
-      console.log(`Processing as document: ${mimeType}`);
+      console.log(`Processing as document: ${originalMimeType}`);
+      
     } else {
       return NextResponse.json(
-        { success: false, error: `Unsupported file type: ${mimeType}. Please upload an image, PDF, DOCX, DOC, TXT, or RTF file.` },
+        { success: false, error: `Unsupported file type for AI extraction: ${originalMimeType}.` },
         { status: 415 }
       );
     }
 
-    const perplexityResponse = await fetch(
-      "https://api.perplexity.ai/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.PERPLEXITY_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "sonar", 
-          disable_search: true,
-          messages: [
+    // 6. Construct the Perplexity API payload
+    const payload = {
+        model: "sonar", 
+        disable_search: true,
+        messages: [
             {
-              role: "system",
-              content:
-                "You are an expert data extraction assistant. Analyze the provided document/image and extract the key information precisely according to the requested JSON schema. Ensure the vendor name is short (2-4 words), the date is in YYYY-MM-DD format, and the category is one of the allowed types (food, travel, cosmetics, utility, services, miscellaneous). Do not make up information.",
+                role: "system",
+                content:
+                    "You are an expert data extraction assistant. Analyze the provided document/image and extract the key information precisely according to the requested JSON schema. Ensure the vendor name is short (2-4 words), the date is in YYYY-MM-DD format, and the category is one of the allowed types (food, travel, cosmetics, utility, services, miscellaneous). Do not make up information.",
             },
             {
-              role: "user",
-              content: [
-                {
-                  type: "text",
-                  text: "Extract the data from this document/image and return it as a JSON object matching the provided schema.",
-                },
-                attachmentContent, 
-              ],
+                role: "user",
+                content: [
+                    {
+                        type: "text",
+                        text: "Extract the data from this document/image and return it as a JSON object matching the provided schema.",
+                    },
+                    attachmentContent as any,
+                ],
             },
-          ],
-          response_format: {
+        ],
+        response_format: {
             type: "json_schema",
             json_schema: {
-              schema: EXTRACTION_SCHEMA, 
+                schema: EXTRACTION_SCHEMA, 
             },
-          },
-        }),
-      }
+        },
+    };
+
+    // 7. Call the Perplexity API
+    const perplexityResponse = await fetch(
+        PERPLEXITY_API_URL,
+        {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+        }
     );
 
     if (!perplexityResponse.ok) {
-      const errorData = await perplexityResponse.json();
-      console.error("Perplexity API Error:", errorData);
-      const status = perplexityResponse.status;
-      let errorMsg = "Failed to call Perplexity API.";
-      if (status === 429) {
-        errorMsg = "Rate limit hit. Please try again later.";
-      }
-      return NextResponse.json(
-        { success: false, error: errorMsg },
-        { status }
-      );
+        const errorData = await perplexityResponse.json();
+        console.error("Perplexity API Error:", errorData);
+        let errorMsg = errorData.error?.message || "Failed to call Perplexity API.";
+        return NextResponse.json(
+            { success: false, error: errorMsg },
+            { status: perplexityResponse.status }
+        );
     }
 
     const perplexityData = await perplexityResponse.json();
-
-    console.log("Perplexity Response Data:", perplexityData);
-
     const responseContent = perplexityData.choices[0]?.message?.content;
 
     if (!responseContent) {
-      throw new Error("Invalid response structure from Perplexity (no content).");
+        throw new Error("Invalid response structure from Perplexity (no content).");
     }
 
     const extractedArgs = JSON.parse(responseContent);
-    const { amount, vendor, date, category, notes } = extractedArgs;
+    
+    // 8. Return the extracted data
+    return NextResponse.json(extractedArgs, { status: 200 });
 
-    console.log("Extracted Arguments:", extractedArgs);
-
-    return NextResponse.json({
-      success: true,
-      amount: amount,
-      vendor: vendor,
-      date: date,
-      category: category,
-      notes: notes,
-    });
-  } catch (error: any) {
-    console.error("Error in /api/extract:", error);
+  } catch (error) {
+    console.error("AI Extraction Pipeline Error:", error);
     return NextResponse.json(
-      { success: false, error: error.message || "An internal server error occurred." },
+      { success: false, error: "An internal server error occurred.", details: (error as Error).message },
       { status: 500 }
     );
   }
