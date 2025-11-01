@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@auth/core": "^0.34.3",
+    "browser-image-compression": "^2.0.2",
     "googleapis": "^164.1.0",
     "lucide-react": "^0.547.0",
     "next": "16.0.0",

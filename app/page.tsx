@@ -4,6 +4,8 @@ import { useSession, signIn } from "next-auth/react";
 import { useState, useCallback, useMemo } from "react";
 import { Upload, Camera, DollarSign, Tag, Calendar, ShoppingBag, Edit, Loader2, Link } from 'lucide-react'; 
 import Header from "./components/Header";
+import imageCompression from 'browser-image-compression';
+
 // Define types for extracted and final data
 interface ExtractedData {
   amount: number | null;
@@ -90,13 +92,64 @@ export default function BillTrackerApp() {
 
         let driveFileId: string | null = null;
         let driveLink: string | null = null;
+        let compressedUploadFile = file; // Default to original
+        let isCompressed = false;
 
+        let uploadFileToUse: File = file;
+
+
+          try {
+            // --- Step 0: Conditional Compression ---
+            const MAX_SIZE_MB = 4; // Threshold for compression
+            
+        
+            const fileSizeMB = file.size / 1024 / 1024;
+            const isImage = file.type.startsWith("image/");
+        
+            if (isImage && fileSizeMB > MAX_SIZE_MB) {
+              setMessage(`Compressing large image (${fileSizeMB.toFixed(2)} MB)...`);
+              setCurrentStep(0);
+        
+              const compressionOptions = {
+                maxSizeMB: MAX_SIZE_MB,
+                useWebWorker: true,
+                alwaysKeepResolution: true,
+              };
+        
+              try {
+                const compressedFile = await imageCompression(file, compressionOptions);
+                console.log(
+                  `✅ Compressed from ${fileSizeMB.toFixed(2)}MB → ${(compressedFile.size / 1024 / 1024).toFixed(2)}MB`
+                );
+                compressedUploadFile = new File([compressedFile], file.name, { type: file.type }); 
+                isCompressed = true;
+              } catch (compressionError) {
+                console.warn("⚠️ Image compression failed, continuing with original file:", compressionError);
+                compressedUploadFile = file; // fallback gracefully
+              }
+            }
+        } catch (err) {
+            console.error("❌ Unexpected error during compression:", err);
+
+        }
+
+        // ------------------------------------
+        // if compressedUploadFile is defined, use it; otherwise, use original file
+
+        uploadFileToUse = isCompressed ? compressedUploadFile : file;
+        
+
+        // ------------------------------------
+        // STEP 1: UPLOAD TO GOOGLE DRIVE
+        // ------------------------------------
         try {
-            setMessage(`1/2: Uploading '${file.name}' to Drive...`);
+
+       
+            setMessage(`1/2: Uploading '${uploadFileToUse.name}' to Drive...`);
             setCurrentStep(1);
 
             const uploadFormData = new FormData();
-            uploadFormData.append("file", file); 
+            uploadFormData.append("file", uploadFileToUse);
 
             const uploadResponse = await fetch("/api/upload-to-drive", {
                 method: "POST",
@@ -143,7 +196,7 @@ export default function BillTrackerApp() {
                     'Authorization': `Bearer ${session.accessToken}`,
                     
                 },
-                body: JSON.stringify({ fileId: driveFileId, fileName: file.name, fileType: file.type}),
+                body: JSON.stringify({ fileId: driveFileId, fileName: uploadFileToUse.name, fileType: uploadFileToUse.type}),
             });
 
             const data = await extractResponse.json();
