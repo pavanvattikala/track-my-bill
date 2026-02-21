@@ -56,9 +56,8 @@ const DataField: React.FC<{
         <span className="ml-2">{label}:</span>
       </span>
       <span
-        className={`text-right font-semibold ${
-          isCurrency ? "text-indigo-600 text-lg" : "text-gray-800"
-        }`}
+        className={`text-right font-semibold ${isCurrency ? "text-indigo-600 text-lg" : "text-gray-800"
+          }`}
       >
         {displayValue}
       </span>
@@ -135,8 +134,9 @@ export default function BillTrackerApp() {
 
         const compressionOptions = {
           maxSizeMB: MAX_SIZE_MB,
+          maxWidthOrHeight: 1920,
           useWebWorker: true,
-          alwaysKeepResolution: true,
+          initialQuality: 0.8,
         };
 
         try {
@@ -455,8 +455,8 @@ export default function BillTrackerApp() {
                   {currentStep === 1
                     ? "Uploading to Drive..."
                     : currentStep === 2
-                    ? "Extracting Data Using AI..."
-                    : "Logging to Sheet..."}
+                      ? "Extracting Data Using AI..."
+                      : "Logging to Sheet..."}
                 </>
               ) : (
                 "Upload and Extract Data"
