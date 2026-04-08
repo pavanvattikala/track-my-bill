@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { google } from "googleapis";
 import { Buffer } from "buffer";
+import OpenAI from "openai";
 
 const isImageMimeType = (mimeType: string): boolean => {
   return mimeType.startsWith("image/");
@@ -47,18 +48,19 @@ const EXTRACTION_SCHEMA = {
     },
   },
   required: ["amount", "vendor", "date", "category", "notes"],
+  additionalProperties: false,
 };
 
-const PERPLEXITY_API_URL = "https://api.perplexity.ai/chat/completions";
-const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 export async function POST(req: Request) {
   try {
-    if (!PERPLEXITY_API_KEY) {
+    if (!OPENAI_API_KEY) {
       return NextResponse.json(
         {
           success: false,
-          error: "PERPLEXITY_API_KEY is not set in environment variables.",
+          error: "OPENAI_API_KEY is not set in environment variables.",
         },
         { status: 500 }
       );
@@ -147,29 +149,19 @@ export async function POST(req: Request) {
         },
       };
       console.log(`Processing as image: ${originalMimeType}`);
-    } else if (isSupportedDocumentMimeType(originalMimeType)) {
-      // DOCUMENT
-      attachmentContent = {
-        type: "file_url",
-        file_url: {
-          url: base64File,
-        },
-      };
-      console.log(`Processing as document: ${originalMimeType}`);
     } else {
       return NextResponse.json(
         {
           success: false,
-          error: `Unsupported file type for AI extraction: ${originalMimeType}.`,
+          error: `Non-image documents like PDFs are no longer supported for automatic AI extraction. Please upload an image instead: ${originalMimeType}.`,
         },
         { status: 415 }
       );
     }
 
-    // 6. Construct the Perplexity API payload
-    const payload = {
-      model: "sonar",
-      disable_search: true,
+    // 6. Call the OpenAI API
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
@@ -190,44 +182,24 @@ export async function POST(req: Request) {
       response_format: {
         type: "json_schema",
         json_schema: {
+          name: "expense_extraction",
+          strict: true,
           schema: EXTRACTION_SCHEMA,
         },
       },
-    };
-
-    // 7. Call the Perplexity API
-    const perplexityResponse = await fetch(PERPLEXITY_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
     });
 
-    if (!perplexityResponse.ok) {
-      const errorData = await perplexityResponse.json();
-      console.error("Perplexity API Error:", errorData);
-      let errorMsg =
-        errorData.error?.message || "Failed to call Perplexity API.";
-      return NextResponse.json(
-        { success: false, error: errorMsg },
-        { status: perplexityResponse.status }
-      );
-    }
-
-    const perplexityData = await perplexityResponse.json();
-    const responseContent = perplexityData.choices[0]?.message?.content;
+    const responseContent = completion.choices[0]?.message?.content;
 
     if (!responseContent) {
       throw new Error(
-        "Invalid response structure from Perplexity (no content)."
+        "Invalid response structure from OpenAI (no content)."
       );
     }
 
     const extractedArgs = JSON.parse(responseContent);
 
-    // 8. Return the extracted data
+    // 7. Return the extracted data
     return NextResponse.json(extractedArgs, { status: 200 });
   } catch (error) {
     console.error("AI Extraction Pipeline Error:", error);

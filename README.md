@@ -8,7 +8,7 @@ Our application turns the tedious chore of expense reporting into a simple, four
 
 1.  **📸 Capture & Upload:** Use the mobile-optimized interface (built with **Tailwind CSS**) to snap a photo or upload an image/document (JPEG, PNG, PDF, etc.).
 2.  **🔒 Secure Archiving:** The original file (**Image or PDF**) is instantly and securely uploaded to a designated folder in your **personal Google Drive**.
-3.  **🧠 Intelligent Extraction:** The Perplexity AI `sonar` model processes the file, using a structured JSON schema to guarantee accurate, reliable data output.
+3.  **🧠 Intelligent Extraction:** The OpenAI `gpt-4o-mini` model processes the image, using a structured JSON schema to guarantee accurate, reliable data output.
 4.  **📈 Automated Logging:** The extracted financial data is automatically inserted as a new, organized row into your **Google Sheet**, creating a real-time, audit-ready expense log.
 
 ---
@@ -37,7 +37,7 @@ You must have the following tools and credentials:
 
 - **Node.js** (v18 or higher)
 - **npm** or **Yarn**
-- A **Perplexity API Key** (for data extraction).
+- An **OpenAI API Key** (for data extraction).
 - **Google OAuth Credentials** (for Drive and Sheets API access).
 
 ### 1\. Clone the Repository
@@ -58,8 +58,8 @@ npm install
 Create a file named `.env` in your root directory and add your API keys and Google authentication details.
 
 ```env
-# Perplexity AI Key for data extraction (using sonar model)
-PERPLEXITY_API_KEY="YOUR_PERPLEXITY_API_KEY"
+# OpenAI API Key for data extraction (using gpt-4o-mini model)
+OPENAI_API_KEY="YOUR_OPENAI_API_KEY"
 
 # Google OAuth 2.0 Credentials for Drive/Sheets integration
 GOOGLE_CLIENT_ID="YOUR_GOOGLE_CLIENT_ID"
