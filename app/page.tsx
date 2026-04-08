@@ -1,7 +1,7 @@
 "use client";
 
 import { useSession, signIn } from "next-auth/react";
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import {
   Upload,
   Camera,
@@ -76,6 +76,12 @@ export default function BillTrackerApp() {
   const [message, setMessage] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [currentStep, setCurrentStep] = useState<number>(1);
+  const [isReviewing, setIsReviewing] = useState<boolean>(false);
+  const [editData, setEditData] = useState<ExtractedData | null>(null);
+  const [countdown, setCountdown] = useState<number>(5);
+  const [isAutoSaving, setIsAutoSaving] = useState<boolean>(true);
+
+  const isTestMode = process.env.NEXT_PUBLIC_TEST_MODE === 'true';
 
   // --- HANDLERS ---
 
@@ -97,9 +103,58 @@ export default function BillTrackerApp() {
     setUploadResult(null);
     setError(null);
     setMessage("");
+    setIsReviewing(false);
+    setEditData(null);
+    setIsAutoSaving(false);
   };
 
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+  const handleLogToSheet = async () => {
+    try {
+      if (!editData || !uploadResult) {
+        throw new Error("Missing extracted data or upload result to log.");
+      }
+
+      setMessage("3/3: Logging data to Google Sheets...");
+      setCurrentStep(3);
+      setIsLoading(true);
+
+      const logResponse = await fetch("/api/log-bill", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session?.accessToken}`,
+        },
+        body: JSON.stringify({
+          data: editData,
+          upload: uploadResult,
+        }),
+      });
+
+      const logData = await logResponse.json();
+
+      if (!logResponse.ok) {
+        const errorMsg =
+          logData.details ||
+          logData.error ||
+          "Failed to log data to Google Sheets.";
+        throw new Error(errorMsg);
+      }
+
+      console.log("Log Success:", logData);
+      setLogResult(logData);
+      setExtractionResult(editData);
+      setMessage("All steps completed successfully!");
+      setIsReviewing(false);
+    } catch (err) {
+      const error = err as Error;
+      setError(`Google Sheets Log Error: ${error.message || "Failed to log data."}`);
+    } finally {
+      setIsLoading(false);
+      setCurrentStep(4);
+    }
+  };
+
+  const handleUploadAndExtract = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (!file || !session?.accessToken) {
       setError("Please select a file and ensure you are signed in.");
@@ -110,6 +165,25 @@ export default function BillTrackerApp() {
     setExtractionResult(null);
     setError(null);
     setUploadResult(null);
+
+    if (isTestMode) {
+      setTimeout(() => {
+        setUploadResult({ id: 'dummy_id', fileName: file.name, link: '#' });
+        setEditData({
+          vendor: 'Dummy Vendor',
+          date: '2023-10-25',
+          category: 'Food',
+          amount: 150.50,
+          notes: 'This is a dummy extraction to save AI credits.',
+        });
+        setIsReviewing(true);
+        setCountdown(5);
+        setIsAutoSaving(true);
+        setMessage('Test Mode active: Dummy data loaded.');
+        setIsLoading(false);
+      }, 800);
+      return;
+    }
 
     let driveFileId: string | null = null;
     let driveLink: string | null = null;
@@ -235,64 +309,30 @@ export default function BillTrackerApp() {
         throw new Error(errorMsg);
       }
 
-      extractedData = data;
-
-      setExtractionResult(data);
-      setMessage("Step 2/3: Data extraction complete!");
+      setEditData(data); // Ready for review
+      setIsReviewing(true);
+      setCountdown(5);
+      setIsAutoSaving(true);
+      setMessage("Step 2/3: Data extraction complete! Directing to review...");
     } catch (err) {
       const error = err as Error;
       setError(
         `AI Extraction Error: ${error.message || "Failed to extract data."}`
       );
-    }
-
-    // ------------------------------------
-    // STEP 3: LOG DATA TO GOOGLE SHEETS
-    // ------------------------------------
-
-    try {
-      if (!extractedData || !uploadData) {
-        throw new Error("Missing extracted data or upload result to log.");
-      }
-
-      setMessage("3/3: Logging data to Google Sheets...");
-      setCurrentStep(3);
-
-      const logResponse = await fetch("/api/log-bill", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.accessToken}`,
-        },
-        body: JSON.stringify({
-          data: extractedData,
-          upload: uploadData,
-        }),
-      });
-
-      const logData = await logResponse.json();
-
-      if (!logResponse.ok) {
-        const errorMsg =
-          logData.details ||
-          logData.error ||
-          "Failed to log data to Google Sheets.";
-        throw new Error(errorMsg);
-      }
-
-      console.log("Log Success:", logData);
-      setLogResult(logData);
-      setMessage("All steps completed successfully!");
-    } catch (err) {
-      const error = err as Error;
-      setError(
-        `Google Sheets Log Error: ${error.message || "Failed to log data."}`
-      );
     } finally {
       setIsLoading(false);
-      setCurrentStep(4); // Indicate final completion
     }
   };
+
+  useEffect(() => {
+    if (!isReviewing || !isAutoSaving || logResult) return;
+    if (countdown > 0) {
+      const timerId = setTimeout(() => setCountdown(c => c - 1), 1000);
+      return () => clearTimeout(timerId);
+    } else if (countdown === 0 && !isLoading) {
+      handleLogToSheet();
+    }
+  }, [isReviewing, countdown, isAutoSaving, isLoading, logResult, handleLogToSheet]);
 
   const buttonClass =
     isLoading || !file
@@ -388,84 +428,204 @@ export default function BillTrackerApp() {
           </p>
 
           {/* --- FILE INPUT --- */}
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="space-y-3">
-              {!file ? (
-                <>
-                  <p className="text-center text-sm text-gray-500 mb-4">
-                    Select or take a photo of your receipt.
-                  </p>
-                  {/* File Upload Button */}
-                  <label
-                    htmlFor="file-upload"
-                    className="flex items-center justify-center w-full rounded-xl bg-blue-50 px-4 py-3 text-center text-base font-semibold text-blue-600 border border-blue-200 cursor-pointer hover:bg-blue-100 transition-colors shadow-sm"
-                  >
-                    <Upload className="h-5 w-5 mr-2" />
-                    Upload File (PDF/Image)
-                  </label>
-                  {/* Camera Upload Button */}
-                  <label
-                    htmlFor="camera-upload"
-                    className="flex items-center justify-center w-full rounded-xl bg-green-50 px-4 py-3 text-center text-base font-semibold text-green-600 border border-green-200 cursor-pointer hover:bg-green-100 transition-colors shadow-sm"
-                  >
-                    <Camera className="h-5 w-5 mr-2" />
-                    Take Photo
-                  </label>
+          {!isReviewing && !logResult && (
+            <form onSubmit={handleUploadAndExtract} className="space-y-6">
+              <div className="space-y-3">
+                {!file ? (
+                  <>
+                    <p className="text-center text-sm text-gray-500 mb-4">
+                      Select or take a photo of your receipt.
+                    </p>
+                    {/* File Upload Button */}
+                    <label
+                      htmlFor="file-upload"
+                      className="flex items-center justify-center w-full rounded-xl bg-blue-50 px-4 py-3 text-center text-base font-semibold text-blue-600 border border-blue-200 cursor-pointer hover:bg-blue-100 transition-colors shadow-sm"
+                    >
+                      <Upload className="h-5 w-5 mr-2" />
+                      Upload File (PDF/Image)
+                    </label>
+                    {/* Camera Upload Button */}
+                    <label
+                      htmlFor="camera-upload"
+                      className="flex items-center justify-center w-full rounded-xl bg-green-50 px-4 py-3 text-center text-base font-semibold text-green-600 border border-green-200 cursor-pointer hover:bg-green-100 transition-colors shadow-sm"
+                    >
+                      <Camera className="h-5 w-5 mr-2" />
+                      Take Photo
+                    </label>
 
-                  <input
-                    id="file-upload"
-                    type="file"
-                    accept="image/*,application/pdf"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-                  <input
-                    id="camera-upload"
-                    type="file"
-                    accept="image/*"
-                    capture="environment"
-                    onChange={handleFileChange}
-                    className="hidden"
-                  />
-                </>
-              ) : (
-                <div className="flex flex-col items-center justify-center p-4 border-2 border-solid border-indigo-400 rounded-lg bg-indigo-50">
-                  <p className="text-sm font-semibold text-indigo-600 truncate max-w-full">
-                    File Selected: {file.name}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={clearFile}
-                    className="mt-2 text-xs text-red-500 hover:text-red-600"
-                  >
-                    Clear Selection
-                  </button>
+                    <input
+                      id="file-upload"
+                      type="file"
+                      accept="image/*,application/pdf"
+                      onChange={handleFileChange}
+                      className="hidden"
+                    />
+                    <input
+                      id="camera-upload"
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={handleFileChange}
+                      className="hidden"
+                    />
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center p-4 border-2 border-solid border-indigo-400 rounded-lg bg-indigo-50">
+                    <p className="text-sm font-semibold text-indigo-600 truncate max-w-full">
+                      File Selected: {file.name}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={clearFile}
+                      className="mt-2 text-xs text-red-500 hover:text-red-600"
+                    >
+                      Clear Selection
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                disabled={isLoading || !file}
+                className={`w-full flex items-center justify-center rounded-xl px-4 py-3 text-center text-base font-semibold text-white transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${buttonClass}`}
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="animate-spin h-5 w-5 mr-3" />
+                    {currentStep === 1
+                      ? "Uploading to Drive..."
+                      : "Extracting Data..."}
+                  </>
+                ) : (
+                  "Upload and Extract Data"
+                )}
+              </button>
+            </form>
+          )}
+
+          {isReviewing && editData && (
+            <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5 shadow-sm space-y-4">
+                <h2 className="text-lg font-bold text-center text-indigo-800 border-b border-indigo-200 pb-3 flex items-center justify-center">
+                  <Edit className="w-5 h-5 mr-2" />
+                  Review Details
+                </h2>
+
+
+
+                <div className="space-y-4">
+                  <div className="flex flex-col">
+                    <label className="text-sm font-semibold text-gray-700 mb-1">Vendor</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <ShoppingBag className="h-4 w-4 text-gray-400" />
+                      </div>
+                      <input
+                        type="text"
+                        value={editData.vendor || ""}
+                        onChange={(e) => { setEditData({ ...editData, vendor: e.target.value }); setIsAutoSaving(false); }}
+                        onFocus={() => setIsAutoSaving(false)}
+                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+                        placeholder="Vendor name"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col">
+                    <label className="text-sm font-semibold text-gray-700 mb-1">Date</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Calendar className="h-4 w-4 text-gray-400" />
+                      </div>
+                      <input
+                        type="text"
+                        value={editData.date || ""}
+                        onChange={(e) => { setEditData({ ...editData, date: e.target.value }); setIsAutoSaving(false); }}
+                        onFocus={() => setIsAutoSaving(false)}
+                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+                        placeholder="YYYY-MM-DD"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col">
+                    <label className="text-sm font-semibold text-gray-700 mb-1">Category</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Tag className="h-4 w-4 text-gray-400" />
+                      </div>
+                      <input
+                        type="text"
+                        value={editData.category || ""}
+                        onChange={(e) => { setEditData({ ...editData, category: e.target.value }); setIsAutoSaving(false); }}
+                        onFocus={() => setIsAutoSaving(false)}
+                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+                        placeholder="Food, Travel, etc."
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col">
+                    <label className="text-sm font-semibold text-gray-700 mb-1">Amount (₹)</label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Rupee className="h-4 w-4 text-gray-400" />
+                      </div>
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={editData.amount !== null ? editData.amount : ""}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setEditData({ ...editData, amount: val === "" ? null : parseFloat(val) });
+                          setIsAutoSaving(false);
+                        }}
+                        onFocus={() => setIsAutoSaving(false)}
+                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+                        placeholder="0.00"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col">
+                    <label className="text-sm font-semibold text-gray-700 mb-1">Additional Notes</label>
+                    <textarea
+                      value={editData.notes || ""}
+                      onChange={(e) => { setEditData({ ...editData, notes: e.target.value }); setIsAutoSaving(false); }}
+                      onFocus={() => setIsAutoSaving(false)}
+                      rows={3}
+                      className="w-full p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors resize-y"
+                      placeholder="Add any extra details before saving..."
+                    />
+                  </div>
                 </div>
-              )}
-            </div>
+              </div>
 
-            <button
-              type="submit"
-              disabled={isLoading || !file}
-              className={`w-full flex items-center justify-center rounded-xl px-4 py-3 text-center text-base font-semibold text-white transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${buttonClass}`}
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="animate-spin h-5 w-5 mr-3" />
-                  {currentStep === 1
-                    ? "Uploading to Drive..."
-                    : currentStep === 2
-                      ? "Extracting Data Using AI..."
-                      : "Logging to Sheet..."}
-                </>
-              ) : (
-                "Upload and Extract Data"
-              )}
-            </button>
-          </form>
+              <button
+                onClick={handleLogToSheet}
+                disabled={isLoading}
+                className={`relative overflow-hidden w-full flex items-center justify-center rounded-xl px-4 py-3 text-center text-base font-semibold text-white transition-all duration-150 shadow-md ${isLoading ? "bg-gray-400 cursor-not-allowed" : "bg-green-600 hover:bg-green-700 hover:shadow-lg"}`}
+              >
+                {isAutoSaving && !isLoading && (
+                  <div 
+                    className="absolute left-0 top-0 bottom-0 bg-green-500 transition-all duration-1000 ease-linear"
+                    style={{ width: `${((5 - countdown) / 5) * 100}%` }}
+                  />
+                )}
+                <span className="relative z-10 flex items-center">
+                  {isLoading ? (
+                    <><Loader2 className="animate-spin h-5 w-5 mr-3" /> Saving to Sheet...</>
+                  ) : (
+                    isAutoSaving ? "Auto Submitting..." : "Save & Log to Sheet"
+                  )}
+                </span>
+              </button>
+            </div>
+          )}
 
           {/* --- UPLOAD STATUS MESSAGE --- */}
-          {message && !error && !extractionResult && (
+          {message && !error && !extractionResult && !isReviewing && (
             <div className="mt-6 p-4 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-800 text-center shadow-md">
               <p className="text-sm font-medium">{message}</p>
             </div>
