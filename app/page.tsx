@@ -14,6 +14,7 @@ import {
   Link,
 } from "lucide-react";
 import Header from "./components/Header";
+import CameraCapture from "./components/CameraCapture";
 import imageCompression from "browser-image-compression";
 import { useConfig } from "./hooks/useConfig";
 
@@ -87,6 +88,7 @@ export default function BillTrackerApp() {
   const [editData, setEditData] = useState<ExtractedData | null>(null);
   const [countdown, setCountdown] = useState<number>(5);
   const [isAutoSaving, setIsAutoSaving] = useState<boolean>(true);
+  const [isCameraOpen, setIsCameraOpen] = useState<boolean>(false);
 
   const isTestMode = process.env.NEXT_PUBLIC_TEST_MODE === "true";
 
@@ -103,6 +105,14 @@ export default function BillTrackerApp() {
     },
     []
   );
+
+  const handleCameraCapture = useCallback((capturedFile: File) => {
+    setFile(capturedFile);
+    setError(null);
+    setExtractionResult(null);
+    setUploadResult(null);
+    setIsCameraOpen(false);
+  }, []);
 
   const clearFile = () => {
     setFile(null);
@@ -358,6 +368,14 @@ export default function BillTrackerApp() {
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
+      {/* In-browser camera overlay */}
+      {isCameraOpen && (
+        <CameraCapture
+          onCapture={handleCameraCapture}
+          onClose={() => setIsCameraOpen(false)}
+        />
+      )}
+
       <Header
         categories={categories}
         isSaving={isSaving}
@@ -389,15 +407,15 @@ export default function BillTrackerApp() {
                       <Upload className="h-5 w-5 mr-2" />
                       Upload File (PDF/Image)
                     </label>
-                    <label
-                      htmlFor="camera-upload"
+                    <button
+                      type="button"
+                      onClick={() => setIsCameraOpen(true)}
                       className="flex items-center justify-center w-full rounded-xl bg-green-50 px-4 py-3 text-center text-base font-semibold text-green-600 border border-green-200 cursor-pointer hover:bg-green-100 transition-colors shadow-sm"
                     >
                       <Camera className="h-5 w-5 mr-2" />
                       Take Photo
-                    </label>
+                    </button>
                     <input id="file-upload" type="file" accept="image/*,application/pdf" onChange={handleFileChange} className="hidden" />
-                    <input id="camera-upload" type="file" accept="image/*" capture="environment" onChange={handleFileChange} className="hidden" />
                   </>
                 ) : (
                   <div className="flex flex-col items-center justify-center p-4 border-2 border-solid border-indigo-400 rounded-lg bg-indigo-50">
