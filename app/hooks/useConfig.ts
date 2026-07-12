@@ -29,7 +29,7 @@ interface UseConfigReturn {
 export function useConfig(): UseConfigReturn {
   const { data: session, status } = useSession();
   const [categories, setCategories] = useState<string[]>(DEFAULT_CATEGORIES);
-  const [isConfigLoading, setIsConfigLoading] = useState<boolean>(true);
+  const [isConfigLoading, setIsConfigLoading] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
 
   // Load config from Drive on login
