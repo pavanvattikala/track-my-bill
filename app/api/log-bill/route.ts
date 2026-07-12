@@ -3,7 +3,7 @@ import { google } from "googleapis";
 import moment from "moment";
 
 // --- CONFIGURATION ---
-const TARGET_FOLDER_NAME = "track-my-bills";
+const ROOT_FOLDER_NAME = "Track-My-Bills";
 const SPREADSHEET_HEADER = [
   "Date",
   "Vendor",
@@ -14,21 +14,10 @@ const SPREADSHEET_HEADER = [
   "Upload ID",
 ];
 const MONTHLY_TABS = [
-  "JAN",
-  "FEB",
-  "MAR",
-  "APR",
-  "MAY",
-  "JUN",
-  "JUL",
-  "AUG",
-  "SEP",
-  "OCT",
-  "NOV",
-  "DEC",
+  "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 ];
 const SUMMARY_TAB_NAME = "Annual-Summary";
-
 const AMOUNT_COLUMN_LETTER = "D";
 const MONTHLY_TOTAL_CELL = "F2";
 const MONTHLY_TOTAL_LABEL_CELL = "F1";
@@ -54,33 +43,65 @@ interface RequestBody {
   upload: UploadResult;
 }
 
+// --- DRIVE HELPERS ---
+
 /**
- * Finds the ID of the "track-my-bills" folder, or creates it if it doesn't exist.
+ * Finds a folder by name within a parent folder, or creates it if it doesn't exist.
  */
-async function findFolderId(drive: any, folderName: string): Promise<string> {
-  const res = await drive.files.list({
-    // Searches for a folder, named {folderName}, in the root of "My Drive"
-    q: `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and 'root' in parents and trashed=false`,
+async function findOrCreateFolder(
+  drive: any,
+  folderName: string,
+  parentId?: string
+): Promise<string> {
+  const parentQuery = parentId ? `'${parentId}' in parents and ` : "";
+  const q = `${parentQuery}mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`;
+
+  const searchRes = await drive.files.list({
+    q,
     fields: "files(id, name)",
     spaces: "drive",
   });
 
-  if (res.data.files.length > 0) {
-    return res.data.files[0].id; // Found it
+  if (searchRes.data.files && searchRes.data.files.length > 0) {
+    return searchRes.data.files[0].id;
   }
 
-  // If not found, create it in the root
-  console.log(`Folder '${folderName}' not found. Creating it...`);
-  const fileMetadata = {
+  // Create it
+  const requestBody: { name: string; mimeType: string; parents?: string[] } = {
     name: folderName,
     mimeType: "application/vnd.google-apps.folder",
   };
-  const folder = await drive.files.create({
-    resource: fileMetadata,
+  if (parentId) requestBody.parents = [parentId];
+
+  const createRes = await drive.files.create({
+    requestBody,
     fields: "id",
   });
-  return folder.data.id;
+  return createRes.data.id!;
 }
+
+/**
+ * Traverses and creates a nested folder structure (e.g. 'Track-My-Bills/2024/Apr').
+ */
+async function findOrCreateNestedFolder(drive: any, path: string): Promise<string> {
+  const parts = path.split("/");
+  let currentParentId: string | undefined = undefined;
+
+  for (const folderName of parts) {
+    currentParentId = await findOrCreateFolder(drive, folderName, currentParentId);
+  }
+
+  return currentParentId!;
+}
+
+/**
+ * Sanitizes a string to be safe for use as a file/folder name.
+ */
+function sanitize(str: string): string {
+  return str.replace(/[\\/:*?"<>|]/g, "").trim();
+}
+
+// --- SPREADSHEET HELPERS ---
 
 /**
  * Creates a new yearly spreadsheet with all monthly tabs and the summary tab.
@@ -91,21 +112,20 @@ async function createYearlySpreadsheet(
   folderId: string,
   fileName: string
 ): Promise<string> {
-  // 1. Create the new spreadsheet file in the target folder
   const fileMetadata = {
     name: fileName,
     mimeType: "application/vnd.google-apps.spreadsheet",
     parents: [folderId],
   };
   const spreadsheet = await drive.files.create({
-    resource: fileMetadata,
+    requestBody: fileMetadata,
     fields: "id",
   });
 
   const spreadsheetId = spreadsheet.data.id;
 
   const metadataResponse = await sheets.spreadsheets.get({
-    spreadsheetId: spreadsheetId,
+    spreadsheetId,
     fields: "sheets.properties.sheetId",
   });
   const defaultSheetId = metadataResponse.data.sheets[0].properties.sheetId;
@@ -114,53 +134,35 @@ async function createYearlySpreadsheet(
     throw new Error(`Failed to create spreadsheet: ${fileName}`);
   }
 
-  // 2. all 13 new tabs to be created
   const ALL_TABS_IN_ORDER = [SUMMARY_TAB_NAME, ...MONTHLY_TABS];
-
   const tabCreationRequests = ALL_TABS_IN_ORDER.map((title) => ({
-    addSheet: {
-      properties: { title: title },
-    },
+    addSheet: { properties: { title } },
   }));
 
-  // 3. request to delete the original "Sheet1"
-  const deleteDefaultSheetRequest = {
-    deleteSheet: { sheetId: defaultSheetId },
-  };
-
-  // 4. Run batch update to create all 13 tabs and delete "Sheet1"
   await sheets.spreadsheets.batchUpdate({
-    spreadsheetId: spreadsheetId,
+    spreadsheetId,
     requestBody: {
-      requests: [...tabCreationRequests, deleteDefaultSheetRequest],
+      requests: [...tabCreationRequests, { deleteSheet: { sheetId: defaultSheetId } }],
     },
   });
 
   const dataForBatchUpdate: any[] = [];
 
-  // 5a. Add headers and formulas for each monthly tab
-
   MONTHLY_TABS.forEach((tabName) => {
-    // Add header
-    dataForBatchUpdate.push({
-      range: `${tabName}!A1`,
-      values: [SPREADSHEET_HEADER],
-    });
-    // Add Total label and formula
+    dataForBatchUpdate.push({ range: `${tabName}!A1`, values: [SPREADSHEET_HEADER] });
     dataForBatchUpdate.push({
       range: `${tabName}!${MONTHLY_TOTAL_LABEL_CELL}`,
       values: [["Monthly Total"], [MONTHLY_TOTAL_FORMULA]],
     });
   });
 
-  // 5b. Add formulas for the "Annual-Summary" tab
   const summaryTabFormulas = [
     ["Quarter 1", ""],
     ["January", `='JAN'!${MONTHLY_TOTAL_CELL}`],
     ["February", `='FEB'!${MONTHLY_TOTAL_CELL}`],
     ["March", `='MAR'!${MONTHLY_TOTAL_CELL}`],
     ["Q1 Total", `=SUM(B2:B4)`],
-    ["", ""], // Spacer
+    ["", ""],
     ["Quarter 2", ""],
     ["April", `='APR'!${MONTHLY_TOTAL_CELL}`],
     ["May", `='MAY'!${MONTHLY_TOTAL_CELL}`],
@@ -183,14 +185,10 @@ async function createYearlySpreadsheet(
     ["YEARLY GRAND TOTAL", `=B5+B11+B17+B23`],
   ];
 
-  dataForBatchUpdate.push({
-    range: `${SUMMARY_TAB_NAME}!A1`,
-    values: summaryTabFormulas,
-  });
+  dataForBatchUpdate.push({ range: `${SUMMARY_TAB_NAME}!A1`, values: summaryTabFormulas });
 
-  // 6. Execute the batch write to add all headers and formulas
   await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId: spreadsheetId,
+    spreadsheetId,
     requestBody: {
       valueInputOption: "USER_ENTERED",
       data: dataForBatchUpdate,
@@ -201,7 +199,7 @@ async function createYearlySpreadsheet(
 }
 
 /**
- * Finds the yearly spreadsheet by name, or calls the create function if it's not found.
+ * Finds the yearly spreadsheet by name, or creates it if not found.
  */
 async function findOrCreateYearlySpreadsheet(
   drive: any,
@@ -209,25 +207,20 @@ async function findOrCreateYearlySpreadsheet(
   folderId: string,
   fileName: string
 ): Promise<string> {
-  // 1. Search for the file in the target folder
   const q = `name = '${fileName}' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and '${folderId}' in parents`;
 
-  const res = await drive.files.list({
-    q: q,
-    fields: "files(id, name)",
-    spaces: "drive",
-  });
+  const res = await drive.files.list({ q, fields: "files(id, name)", spaces: "drive" });
 
   if (res.data.files.length > 0) {
-    console.log("➡️ Using the first file found:", res.data.files[0]);
+    console.log("Using existing spreadsheet:", res.data.files[0].id);
     return res.data.files[0].id;
   }
 
-  // 3. File not found, run the full "First-Time Setup"
-  console.log(`No existing spreadsheet found for: ${fileName}.`);
-  console.log(`Spreadsheet ${fileName} not found. Running First-Time Setup...`);
+  console.log(`Spreadsheet ${fileName} not found. Creating...`);
   return await createYearlySpreadsheet(drive, sheets, folderId, fileName);
 }
+
+// --- ENTRY POINT ---
 
 /** Entry point for the log-bill API route */
 export async function POST(req: Request) {
@@ -235,24 +228,19 @@ export async function POST(req: Request) {
     // 1. Authentication & Validation
     const accessToken = req.headers.get("Authorization")?.split(" ")[1];
     if (!accessToken) {
-      return NextResponse.json(
-        { error: "Missing authentication token." },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: "Missing authentication token." }, { status: 401 });
     }
 
     // 2. Parse JSON Body
     const { data, upload }: RequestBody = await req.json();
     if (!data || !upload || !data.date) {
       return NextResponse.json(
-        {
-          error: "Missing required data fields (data, upload result, or date).",
-        },
+        { error: "Missing required data fields (data, upload result, or date)." },
         { status: 400 }
       );
     }
 
-    // 3. Initialize & Parse
+    // 3. Initialize Google APIs
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: accessToken });
     const sheets = google.sheets({ version: "v4", auth });
@@ -260,27 +248,26 @@ export async function POST(req: Request) {
 
     const dateObject = moment(data.date);
     if (!dateObject.isValid()) {
-      return NextResponse.json(
-        { error: `Invalid date format: ${data.date}` },
-        { status: 400 }
-      );
+      return NextResponse.json({ error: `Invalid date format: ${data.date}` }, { status: 400 });
     }
 
-    const fileName = `Bills-${dateObject.format("YYYY")}`; // e.g., "Bills-2025"
-    const tabName = dateObject.format("MMM").toUpperCase(); // e.g., "NOV"
+    const yearStr = dateObject.format("YYYY");   // e.g. "2024"
+    const monthStr = dateObject.format("MMM");   // e.g. "Apr"
+    const tabName = monthStr.toUpperCase();       // e.g. "APR"
+    const spreadsheetFileName = `Bills-${yearStr}`; // e.g. "Bills-2024"
 
-    // 4. Find or Create Folder
-    const folderId = await findFolderId(drive, TARGET_FOLDER_NAME);
+    // 4. Find/create nested folder: Track-My-Bills/YYYY/MMM for bills files
+    // and Track-My-Bills root for the spreadsheet
+    const rootFolderId = await findOrCreateFolder(drive, ROOT_FOLDER_NAME);
+    const billFolderPath = `${ROOT_FOLDER_NAME}/${yearStr}/${monthStr}`;
+    const billFolderId = await findOrCreateNestedFolder(drive, billFolderPath);
 
-    // 5. Find or Create Yearly Spreadsheet
+    // 5. Find or Create Yearly Spreadsheet (kept in root Track-My-Bills folder)
     const finalSpreadsheetId = await findOrCreateYearlySpreadsheet(
-      drive,
-      sheets,
-      folderId,
-      fileName
+      drive, sheets, rootFolderId, spreadsheetFileName
     );
 
-    // 6. Prepare and Append Expense Data
+    // 6. Prepare and Append Expense Data to Sheet
     const newRow: (string | number | null)[] = [
       data.date,
       data.vendor,
@@ -293,32 +280,67 @@ export async function POST(req: Request) {
 
     await sheets.spreadsheets.values.append({
       spreadsheetId: finalSpreadsheetId,
-      range: `${tabName}!A1`, // Appending to "A1" of the tab finds the next empty row
+      range: `${tabName}!A1`,
       valueInputOption: "USER_ENTERED",
       insertDataOption: "INSERT_ROWS",
-      requestBody: {
-        values: [newRow],
-      },
+      requestBody: { values: [newRow] },
     });
 
-    // 7. Return Success Response
+    // 7. Rename and move the uploaded bill file to Track-My-Bills/YYYY/MMM/
+    let updatedFileLink = upload.link;
+    let updatedFileName = upload.fileName;
+
+    if (upload.id && upload.id !== "dummy_id") {
+      try {
+        // Build clean file name: YYYY-MM-DD_Vendor.ext
+        const ext = upload.fileName.includes(".")
+          ? upload.fileName.split(".").pop()
+          : "jpg";
+        const vendorSlug = sanitize(data.vendor || "Unknown").replace(/\s+/g, "_");
+        const newFileName = `${data.date}_${vendorSlug}.${ext}`;
+
+        // Get current parents so we can remove them when moving
+        const fileMetaRes = await drive.files.get({
+          fileId: upload.id,
+          fields: "parents",
+        });
+        const currentParents = fileMetaRes.data.parents?.join(",") || "";
+
+        // Move file: add new parent, remove old ones
+        const updatedFile = await drive.files.update({
+          fileId: upload.id,
+          addParents: billFolderId,
+          removeParents: currentParents,
+          requestBody: { name: newFileName },
+          fields: "id, webViewLink, name",
+        });
+
+        updatedFileLink = updatedFile.data.webViewLink || upload.link;
+        updatedFileName = updatedFile.data.name || upload.fileName;
+        console.log(`File renamed to '${updatedFileName}' and moved to '${billFolderPath}'`);
+      } catch (renameErr) {
+        // Non-critical — log warning but don't fail the whole request
+        console.warn("File rename/move failed (non-critical):", (renameErr as Error).message);
+      }
+    }
+
+    // 8. Return Success Response
     const spreadsheetLink = `https://docs.google.com/spreadsheets/d/${finalSpreadsheetId}`;
 
     return NextResponse.json(
       {
-        message: `Data successfully inserted into tab '${tabName}' in file '${fileName}'.`,
-        spreadsheetLink: spreadsheetLink,
+        message: `Data logged to tab '${tabName}' in '${spreadsheetFileName}'.`,
+        spreadsheetLink,
         spreadsheetId: finalSpreadsheetId,
+        updatedFileLink,
+        updatedFileName,
       },
       { status: 200 }
     );
   } catch (error) {
     console.error("Sheets/Drive API Error:", error);
     return NextResponse.json(
-      {
-        error: "Failed to process request.",
-        details: (error as Error).message,
-      },
+      { error: "Failed to process request.", details: (error as Error).message },
       { status: 500 }
     );
   }

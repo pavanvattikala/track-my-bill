@@ -18,43 +18,60 @@ const isSupportedDocumentMimeType = (mimeType: string): boolean => {
   return supportedDocs.includes(mimeType) || mimeType.startsWith("text/");
 };
 
-// --- Perplexity AI Configuration ---
-const EXTRACTION_SCHEMA = {
-  type: "object",
-  properties: {
-    amount: {
-      type: "number",
-      description:
-        "The final, grand total amount of the invoice or receipt, as a number.",
+const DEFAULT_CATEGORIES = [
+  "Food & Dining",
+  "Groceries",
+  "Travel",
+  "Utilities",
+  "Medical",
+  "Shopping",
+  "Entertainment",
+  "Services",
+  "Miscellaneous",
+];
+
+/**
+ * Builds the JSON schema and system prompt dynamically based on user categories.
+ */
+function buildExtractionSchema(categories: string[]) {
+  const categoryList = categories.join(", ");
+  return {
+    type: "object",
+    properties: {
+      amount: {
+        type: "number",
+        description:
+          "The final, grand total amount of the invoice or receipt, as a number.",
+      },
+      vendor: {
+        type: "string",
+        description:
+          "The short name of the company or vendor issuing the invoice, 2 to 4 words maximum.",
+      },
+      date: {
+        type: "string",
+        description: "The date the invoice was issued, in YYYY-MM-DD format.",
+      },
+      category: {
+        type: "string",
+        description: `The general category of the purchase. Choose the best matching one from: ${categoryList}. Do not use any other category.`,
+      },
+      notes: {
+        type: "string",
+        description:
+          "A brief description of the bill or purchase, up to 30 words.",
+      },
     },
-    vendor: {
-      type: "string",
-      description:
-        "The short name of the company or vendor issuing the invoice, 2 to 4 words maximum.",
-    },
-    date: {
-      type: "string",
-      description: "The date the invoice was issued, in YYYY-MM-DD format.",
-    },
-    category: {
-      type: "string",
-      description:
-        "The general category of the purchase. Choose one from: food, travel, cosmetics, utility, services, miscellaneous. Do not use any other category.",
-    },
-    notes: {
-      type: "string",
-      description:
-        "A brief description of the bill or purchase, up to 30 words.",
-    },
-  },
-  required: ["amount", "vendor", "date", "category", "notes"],
-  additionalProperties: false,
-};
+    required: ["amount", "vendor", "date", "category", "notes"],
+    additionalProperties: false,
+  };
+}
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 export async function POST(req: Request) {
+  let uploadedFileId: string | null = null;
   try {
     if (!OPENAI_API_KEY) {
       return NextResponse.json(
@@ -69,8 +86,13 @@ export async function POST(req: Request) {
     // 1. Get the Access Token and File ID from the request body
     const body = await req.json();
     const fileId = body.fileId;
-
     const fileType = body.fileType as string | undefined;
+    const userCategories: string[] = Array.isArray(body.categories) && body.categories.length > 0
+      ? body.categories
+      : DEFAULT_CATEGORIES;
+
+    const EXTRACTION_SCHEMA = buildExtractionSchema(userCategories);
+    const categoryList = userCategories.join(", ");
 
     if (!fileType) {
       return NextResponse.json(
@@ -139,9 +161,10 @@ export async function POST(req: Request) {
 
     const base64File = fileBuffer.toString("base64");
     let attachmentContent;
+
     // 5. Prepare attachment content based on MIME type
     if (isImageMimeType(originalMimeType)) {
-      // IMAGE
+      // IMAGE — use base64 data URI directly
       attachmentContent = {
         type: "image_url",
         image_url: {
@@ -149,11 +172,42 @@ export async function POST(req: Request) {
         },
       };
       console.log(`Processing as image: ${originalMimeType}`);
+    } else if (isSupportedDocumentMimeType(originalMimeType)) {
+      // PDF / DOCUMENT — upload to OpenAI Files API, reference by file_id
+      console.log(`Processing as document via OpenAI Files API: ${originalMimeType}`);
+
+      // Determine a sensible filename extension
+      const extMap: Record<string, string> = {
+        "application/pdf": "pdf",
+        "application/msword": "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "text/plain": "txt",
+        "application/rtf": "rtf",
+      };
+      const ext = extMap[originalMimeType] ?? "pdf";
+      const fileName = `bill_upload.${ext}`;
+
+      // Create a File object from the buffer for the OpenAI SDK
+      const fileBlob = new File([fileBuffer], fileName, { type: originalMimeType });
+
+      const uploadedFile = await openai.files.create({
+        file: fileBlob,
+        purpose: "user_data",
+      });
+      uploadedFileId = uploadedFile.id;
+      console.log(`Uploaded to OpenAI Files API with id: ${uploadedFileId}`);
+
+      attachmentContent = {
+        type: "file",
+        file: {
+          file_id: uploadedFileId,
+        },
+      };
     } else {
       return NextResponse.json(
         {
           success: false,
-          error: `Non-image documents like PDFs are no longer supported for automatic AI extraction. Please upload an image instead: ${originalMimeType}.`,
+          error: `Unsupported file type: ${originalMimeType}. Please upload an image (JPG, PNG, WEBP) or a PDF.`,
         },
         { status: 415 }
       );
@@ -165,8 +219,7 @@ export async function POST(req: Request) {
       messages: [
         {
           role: "system",
-          content:
-            "You are an expert data extraction assistant. Analyze the provided document/image and extract the key information precisely according to the requested JSON schema. Ensure the vendor name is short (2-4 words), the date is in YYYY-MM-DD format, and the category is one of the allowed types (food, travel, cosmetics, utility, services, miscellaneous). Do not make up information.",
+          content: `You are an expert data extraction assistant. Analyze the provided document/image and extract the key information precisely according to the requested JSON schema. Ensure the vendor name is short (2-4 words), the date is in YYYY-MM-DD format, and the category must be exactly one of these options: ${categoryList}. Pick the closest match based on the bill contents. Do not invent or use any other category value. Do not make up information.`,
         },
         {
           role: "user",
@@ -191,6 +244,13 @@ export async function POST(req: Request) {
 
     const responseContent = completion.choices[0]?.message?.content;
 
+    // 7. Clean up the uploaded file from OpenAI (fire-and-forget, best effort)
+    if (uploadedFileId) {
+      openai.files.delete(uploadedFileId).catch((err) =>
+        console.warn(`Failed to delete uploaded OpenAI file ${uploadedFileId}:`, err)
+      );
+    }
+
     if (!responseContent) {
       throw new Error(
         "Invalid response structure from OpenAI (no content)."
@@ -199,9 +259,13 @@ export async function POST(req: Request) {
 
     const extractedArgs = JSON.parse(responseContent);
 
-    // 7. Return the extracted data
+    // 8. Return the extracted data
     return NextResponse.json(extractedArgs, { status: 200 });
   } catch (error) {
+    // Best-effort cleanup on error path
+    if (uploadedFileId) {
+      openai.files.delete(uploadedFileId).catch(() => {});
+    }
     console.error("AI Extraction Pipeline Error:", error);
     return NextResponse.json(
       {

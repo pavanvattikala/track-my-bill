@@ -15,8 +15,9 @@ import {
 } from "lucide-react";
 import Header from "./components/Header";
 import imageCompression from "browser-image-compression";
+import { useConfig } from "./hooks/useConfig";
 
-// Define types for extracted and final data
+// --- TYPES ---
 interface ExtractedData {
   amount: number | null;
   vendor: string | null;
@@ -33,8 +34,11 @@ interface UploadResult {
 
 interface LogResult {
   spreadsheetLink: string;
+  updatedFileLink?: string;
+  updatedFileName?: string;
 }
 
+// --- DATA FIELD DISPLAY COMPONENT ---
 const DataField: React.FC<{
   label: string;
   value: string | number | null;
@@ -56,8 +60,9 @@ const DataField: React.FC<{
         <span className="ml-2">{label}:</span>
       </span>
       <span
-        className={`text-right font-semibold ${isCurrency ? "text-indigo-600 text-lg" : "text-gray-800"
-          }`}
+        className={`text-right font-semibold ${
+          isCurrency ? "text-indigo-600 text-lg" : "text-gray-800"
+        }`}
       >
         {displayValue}
       </span>
@@ -65,12 +70,14 @@ const DataField: React.FC<{
   );
 };
 
+// --- MAIN APP ---
 export default function BillTrackerApp() {
   const { data: session, status } = useSession();
+  const { categories, isConfigLoading, saveCategories, isSaving } = useConfig();
+
   const [file, setFile] = useState<File | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [extractionResult, setExtractionResult] =
-    useState<ExtractedData | null>(null);
+  const [extractionResult, setExtractionResult] = useState<ExtractedData | null>(null);
   const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
   const [logResult, setLogResult] = useState<LogResult | null>(null);
   const [message, setMessage] = useState<string>("");
@@ -81,7 +88,7 @@ export default function BillTrackerApp() {
   const [countdown, setCountdown] = useState<number>(5);
   const [isAutoSaving, setIsAutoSaving] = useState<boolean>(true);
 
-  const isTestMode = process.env.NEXT_PUBLIC_TEST_MODE === 'true';
+  const isTestMode = process.env.NEXT_PUBLIC_TEST_MODE === "true";
 
   // --- HANDLERS ---
 
@@ -106,9 +113,10 @@ export default function BillTrackerApp() {
     setIsReviewing(false);
     setEditData(null);
     setIsAutoSaving(false);
+    setLogResult(null);
   };
 
-  const handleLogToSheet = async () => {
+  const handleLogToSheet = useCallback(async () => {
     try {
       if (!editData || !uploadResult) {
         throw new Error("Missing extracted data or upload result to log.");
@@ -134,9 +142,7 @@ export default function BillTrackerApp() {
 
       if (!logResponse.ok) {
         const errorMsg =
-          logData.details ||
-          logData.error ||
-          "Failed to log data to Google Sheets.";
+          logData.details || logData.error || "Failed to log data to Google Sheets.";
         throw new Error(errorMsg);
       }
 
@@ -152,7 +158,7 @@ export default function BillTrackerApp() {
       setIsLoading(false);
       setCurrentStep(4);
     }
-  };
+  }, [editData, uploadResult, session?.accessToken]);
 
   const handleUploadAndExtract = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -166,87 +172,60 @@ export default function BillTrackerApp() {
     setError(null);
     setUploadResult(null);
 
+    // Test mode: use dummy data
     if (isTestMode) {
       setTimeout(() => {
-        setUploadResult({ id: 'dummy_id', fileName: file.name, link: '#' });
+        setUploadResult({ id: "dummy_id", fileName: file.name, link: "#" });
         setEditData({
-          vendor: 'Dummy Vendor',
-          date: '2023-10-25',
-          category: 'Food',
-          amount: 150.50,
-          notes: 'This is a dummy extraction to save AI credits.',
+          vendor: "Dummy Vendor",
+          date: "2023-10-25",
+          category: categories[0] || "Miscellaneous",
+          amount: 150.5,
+          notes: "This is a dummy extraction to save AI credits.",
         });
         setIsReviewing(true);
         setCountdown(5);
         setIsAutoSaving(true);
-        setMessage('Test Mode active: Dummy data loaded.');
+        setMessage("Test Mode active: Dummy data loaded.");
         setIsLoading(false);
       }, 800);
       return;
     }
 
     let driveFileId: string | null = null;
-    let driveLink: string | null = null;
-    let compressedUploadFile = file; // Default to original
+    let compressedUploadFile = file;
     let isCompressed = false;
-
     let uploadFileToUse: File = file;
 
-    let extractedData = null;
-    let uploadData = null;
-
+    // --- Step 0: Conditional Image Compression ---
     try {
-      // --- Step 0: Conditional Compression ---
-      const MAX_SIZE_MB = 4; // Threshold for compression
-
+      const MAX_SIZE_MB = 4;
       const fileSizeMB = file.size / 1024 / 1024;
       const isImage = file.type.startsWith("image/");
 
       if (isImage && fileSizeMB > MAX_SIZE_MB) {
         setMessage(`Compressing large image (${fileSizeMB.toFixed(2)} MB)...`);
         setCurrentStep(0);
-
-        const compressionOptions = {
-          maxSizeMB: MAX_SIZE_MB,
-          maxWidthOrHeight: 1920,
-          useWebWorker: true,
-          initialQuality: 0.8,
-        };
-
         try {
-          const compressedFile = await imageCompression(
-            file,
-            compressionOptions
-          );
-          console.log(
-            `Compressed from ${fileSizeMB.toFixed(2)}MB → ${(
-              compressedFile.size /
-              1024 /
-              1024
-            ).toFixed(2)}MB`
-          );
-          compressedUploadFile = new File([compressedFile], file.name, {
-            type: file.type,
+          const compressedFile = await imageCompression(file, {
+            maxSizeMB: MAX_SIZE_MB,
+            maxWidthOrHeight: 1920,
+            useWebWorker: true,
+            initialQuality: 0.8,
           });
+          compressedUploadFile = new File([compressedFile], file.name, { type: file.type });
           isCompressed = true;
-        } catch (compressionError) {
-          console.warn(
-            "Image compression failed, continuing with original file:",
-            compressionError
-          );
-          compressedUploadFile = file; // fallback gracefully
+        } catch {
+          compressedUploadFile = file;
         }
       }
     } catch (err) {
-      console.error("Unexpected error during compression:", err);
+      console.error("Compression error:", err);
     }
 
-    // if compressedUploadFile is defined, use it; otherwise, use original file
     uploadFileToUse = isCompressed ? compressedUploadFile : file;
 
-    // ------------------------------------
-    // STEP 1: UPLOAD TO GOOGLE DRIVE
-    // ------------------------------------
+    // --- Step 1: Upload to Google Drive ---
     try {
       setMessage(`1/3: Uploading '${uploadFileToUse.name}' to Drive...`);
       setCurrentStep(1);
@@ -257,9 +236,7 @@ export default function BillTrackerApp() {
       const uploadResponse = await fetch("/api/upload-to-drive", {
         method: "POST",
         body: uploadFormData,
-        headers: {
-          Authorization: `Bearer ${session.accessToken}`,
-        },
+        headers: { Authorization: `Bearer ${session.accessToken}` },
       });
 
       if (!uploadResponse.ok) {
@@ -267,11 +244,10 @@ export default function BillTrackerApp() {
         throw new Error(errorData.details || "Drive upload failed.");
       }
 
-      uploadData = await uploadResponse.json();
+      const uploadData = await uploadResponse.json();
       driveFileId = uploadData.id;
-      driveLink = uploadData.link;
       setUploadResult(uploadData);
-      setMessage(`1/3: Upload complete. File ID: ${driveFileId}`);
+      setMessage(`1/3: Upload complete.`);
     } catch (err) {
       const error = err as Error;
       setError(`Drive Upload Error: ${error.message}`);
@@ -279,9 +255,7 @@ export default function BillTrackerApp() {
       return;
     }
 
-    // ------------------------------------
-    // STEP 2: SEND FILE ID TO AI FOR EXTRACTION
-    // ------------------------------------
+    // --- Step 2: AI Extraction ---
     try {
       setMessage("2/3: Extracting data using AI...");
       setCurrentStep(2);
@@ -298,36 +272,34 @@ export default function BillTrackerApp() {
           fileId: driveFileId,
           fileName: uploadFileToUse.name,
           fileType: uploadFileToUse.type,
+          categories: categories, // Pass user's custom categories to AI
         }),
       });
 
       const data = await extractResponse.json();
 
       if (!extractResponse.ok || data.success === false) {
-        const errorMsg =
-          data.error || "An unknown error occurred during extraction.";
-        throw new Error(errorMsg);
+        throw new Error(data.error || "An unknown error occurred during extraction.");
       }
 
-      setEditData(data); // Ready for review
+      setEditData(data);
       setIsReviewing(true);
       setCountdown(5);
       setIsAutoSaving(true);
       setMessage("Step 2/3: Data extraction complete! Directing to review...");
     } catch (err) {
       const error = err as Error;
-      setError(
-        `AI Extraction Error: ${error.message || "Failed to extract data."}`
-      );
+      setError(`AI Extraction Error: ${error.message || "Failed to extract data."}`);
     } finally {
       setIsLoading(false);
     }
   };
 
+  // Auto-submit countdown
   useEffect(() => {
     if (!isReviewing || !isAutoSaving || logResult) return;
     if (countdown > 0) {
-      const timerId = setTimeout(() => setCountdown(c => c - 1), 1000);
+      const timerId = setTimeout(() => setCountdown((c) => c - 1), 1000);
       return () => clearTimeout(timerId);
     } else if (countdown === 0 && !isLoading) {
       handleLogToSheet();
@@ -341,37 +313,26 @@ export default function BillTrackerApp() {
 
   // --- AUTHENTICATION STATES ---
 
-  if (status === "loading") {
+  if (status === "loading" || isConfigLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen text-lg text-gray-700">
+      <div className="flex flex-col items-center justify-center min-h-screen text-lg text-gray-600 gap-3">
         <svg
-          className="animate-spin -ml-1 mr-3 h-5 w-5 text-gray-500"
+          className="animate-spin h-8 w-8 text-indigo-500"
           xmlns="http://www.w3.org/2000/svg"
           fill="none"
           viewBox="0 0 24 24"
         >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          ></circle>
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-          ></path>
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
         </svg>
-        Authenticating...
+        <span className="text-sm text-gray-500">
+          {status === "loading" ? "Authenticating..." : "Loading your settings..."}
+        </span>
       </div>
     );
   }
-  if (
-    status === "unauthenticated" ||
-    session?.error === "RefreshAccessTokenError"
-  ) {
+
+  if (status === "unauthenticated" || session?.error === "RefreshAccessTokenError") {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen p-4 bg-gray-50">
         <p className="text-xl mb-6 text-gray-700">
@@ -381,28 +342,11 @@ export default function BillTrackerApp() {
           onClick={() => signIn("google")}
           className="flex items-center p-3 bg-blue-600 text-white font-semibold rounded-lg shadow-lg hover:bg-blue-700 transition"
         >
-          <svg
-            className="w-5 h-5 mr-2"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <path
-              d="M22.0001 12.5C22.0001 11.45 21.9201 10.74 21.7501 10.08H11.0001V14.15H17.2901C17.0301 15.54 16.2101 16.72 15.0101 17.5V20.14H18.5701C20.6701 18.27 22.0001 15.35 22.0001 12.5Z"
-              fill="#4285F4"
-            />
-            <path
-              d="M11 22C13.92 22 16.43 21.05 18.27 19.4L14.71 16.76C13.75 17.38 12.44 17.78 11 17.78C8.36 17.78 6.13 16.09 5.34 13.72H1.72V16.39C3.59 20.07 7.02 22 11 22Z"
-              fill="#34A853"
-            />
-            <path
-              d="M5.34003 13.72H1.72003V11.05H5.34003C5.17003 10.4 5.08003 9.71 5.08003 9.02C5.08003 8.33 5.17003 7.64 5.34003 7H1.72003V4.33C-0.159971 8.01 -0.159971 14.03 1.72003 17.72H5.34003V13.72Z"
-              fill="#FBBC04"
-            />
-            <path
-              d="M11 5.79004C12.53 5.79004 13.91 6.3 15.01 7.22L18.3 3.93004C16.44 2.13004 13.92 1.10004 11 1.10004C7.02 1.10004 3.59 2.93004 1.72 6.61004L5.34 9.28004C6.13 6.91004 8.36 5.79004 11 5.79004Z"
-              fill="#EA4335"
-            />
+          <svg className="w-5 h-5 mr-2" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22.0001 12.5C22.0001 11.45 21.9201 10.74 21.7501 10.08H11.0001V14.15H17.2901C17.0301 15.54 16.2101 16.72 15.0101 17.5V20.14H18.5701C20.6701 18.27 22.0001 15.35 22.0001 12.5Z" fill="#4285F4" />
+            <path d="M11 22C13.92 22 16.43 21.05 18.27 19.4L14.71 16.76C13.75 17.38 12.44 17.78 11 17.78C8.36 17.78 6.13 16.09 5.34 13.72H1.72V16.39C3.59 20.07 7.02 22 11 22Z" fill="#34A853" />
+            <path d="M5.34003 13.72H1.72003V11.05H5.34003C5.17003 10.4 5.08003 9.71 5.08003 9.02C5.08003 8.33 5.17003 7.64 5.34003 7H1.72003V4.33C-0.159971 8.01 -0.159971 14.03 1.72003 17.72H5.34003V13.72Z" fill="#FBBC04" />
+            <path d="M11 5.79004C12.53 5.79004 13.91 6.3 15.01 7.22L18.3 3.93004C16.44 2.13004 13.92 1.10004 11 1.10004C7.02 1.10004 3.59 2.93004 1.72 6.61004L5.34 9.28004C6.13 6.91004 8.36 5.79004 11 5.79004Z" fill="#EA4335" />
           </svg>
           Sign in with Google
         </button>
@@ -410,21 +354,23 @@ export default function BillTrackerApp() {
     );
   }
 
-  // --- UI ---
+  // --- MAIN UI ---
 
   return (
     <div className="min-h-screen bg-gray-100 font-sans">
-      <Header />
+      <Header
+        categories={categories}
+        isSaving={isSaving}
+        onSaveCategories={saveCategories}
+      />
 
       <div className="flex flex-col items-center justify-start pt-10 pb-8 p-4">
         <div className="w-full max-w-lg p-8 bg-white rounded-xl shadow-2xl border border-gray-200">
           <h1 className="mb-2 text-center text-3xl font-extrabold text-gray-900 tracking-tight flex items-center justify-center">
-            <ShoppingBag className="w-6 h-6 mr-2 text-indigo-600" /> Track My
-            Bill
+            <ShoppingBag className="w-6 h-6 mr-2 text-indigo-600" /> Track My Bill
           </h1>
           <p className="mb-8 text-center text-sm text-gray-500">
-            Upload a bill, invoice, or receipt image. It is saved to Drive and
-            data is extracted.
+            Upload a bill, invoice, or receipt image. It is saved to Drive and data is extracted.
           </p>
 
           {/* --- FILE INPUT --- */}
@@ -436,7 +382,6 @@ export default function BillTrackerApp() {
                     <p className="text-center text-sm text-gray-500 mb-4">
                       Select or take a photo of your receipt.
                     </p>
-                    {/* File Upload Button */}
                     <label
                       htmlFor="file-upload"
                       className="flex items-center justify-center w-full rounded-xl bg-blue-50 px-4 py-3 text-center text-base font-semibold text-blue-600 border border-blue-200 cursor-pointer hover:bg-blue-100 transition-colors shadow-sm"
@@ -444,7 +389,6 @@ export default function BillTrackerApp() {
                       <Upload className="h-5 w-5 mr-2" />
                       Upload File (PDF/Image)
                     </label>
-                    {/* Camera Upload Button */}
                     <label
                       htmlFor="camera-upload"
                       className="flex items-center justify-center w-full rounded-xl bg-green-50 px-4 py-3 text-center text-base font-semibold text-green-600 border border-green-200 cursor-pointer hover:bg-green-100 transition-colors shadow-sm"
@@ -452,33 +396,15 @@ export default function BillTrackerApp() {
                       <Camera className="h-5 w-5 mr-2" />
                       Take Photo
                     </label>
-
-                    <input
-                      id="file-upload"
-                      type="file"
-                      accept="image/*,application/pdf"
-                      onChange={handleFileChange}
-                      className="hidden"
-                    />
-                    <input
-                      id="camera-upload"
-                      type="file"
-                      accept="image/*"
-                      capture="environment"
-                      onChange={handleFileChange}
-                      className="hidden"
-                    />
+                    <input id="file-upload" type="file" accept="image/*,application/pdf" onChange={handleFileChange} className="hidden" />
+                    <input id="camera-upload" type="file" accept="image/*" capture="environment" onChange={handleFileChange} className="hidden" />
                   </>
                 ) : (
                   <div className="flex flex-col items-center justify-center p-4 border-2 border-solid border-indigo-400 rounded-lg bg-indigo-50">
                     <p className="text-sm font-semibold text-indigo-600 truncate max-w-full">
                       File Selected: {file.name}
                     </p>
-                    <button
-                      type="button"
-                      onClick={clearFile}
-                      className="mt-2 text-xs text-red-500 hover:text-red-600"
-                    >
+                    <button type="button" onClick={clearFile} className="mt-2 text-xs text-red-500 hover:text-red-600">
                       Clear Selection
                     </button>
                   </div>
@@ -493,9 +419,7 @@ export default function BillTrackerApp() {
                 {isLoading ? (
                   <>
                     <Loader2 className="animate-spin h-5 w-5 mr-3" />
-                    {currentStep === 1
-                      ? "Uploading to Drive..."
-                      : "Extracting Data..."}
+                    {currentStep === 1 ? "Uploading to Drive..." : "Extracting Data..."}
                   </>
                 ) : (
                   "Upload and Extract Data"
@@ -504,6 +428,7 @@ export default function BillTrackerApp() {
             </form>
           )}
 
+          {/* --- REVIEW FORM --- */}
           {isReviewing && editData && (
             <div className="space-y-5 animate-in fade-in slide-in-from-bottom-4 duration-500">
               <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-5 shadow-sm space-y-4">
@@ -512,9 +437,8 @@ export default function BillTrackerApp() {
                   Review Details
                 </h2>
 
-
-
                 <div className="space-y-4">
+                  {/* Vendor */}
                   <div className="flex flex-col">
                     <label className="text-sm font-semibold text-gray-700 mb-1">Vendor</label>
                     <div className="relative">
@@ -532,6 +456,7 @@ export default function BillTrackerApp() {
                     </div>
                   </div>
 
+                  {/* Date */}
                   <div className="flex flex-col">
                     <label className="text-sm font-semibold text-gray-700 mb-1">Date</label>
                     <div className="relative">
@@ -549,23 +474,32 @@ export default function BillTrackerApp() {
                     </div>
                   </div>
 
+                  {/* Category — Dropdown from config */}
                   <div className="flex flex-col">
                     <label className="text-sm font-semibold text-gray-700 mb-1">Category</label>
                     <div className="relative">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                         <Tag className="h-4 w-4 text-gray-400" />
                       </div>
-                      <input
-                        type="text"
+                      <select
                         value={editData.category || ""}
                         onChange={(e) => { setEditData({ ...editData, category: e.target.value }); setIsAutoSaving(false); }}
                         onFocus={() => setIsAutoSaving(false)}
-                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
-                        placeholder="Food, Travel, etc."
-                      />
+                        className="w-full pl-10 p-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors appearance-none"
+                      >
+                        <option value="">Select category...</option>
+                        {categories.map((cat) => (
+                          <option key={cat} value={cat}>{cat}</option>
+                        ))}
+                        {/* Fallback if AI returned a category not in list */}
+                        {editData.category && !categories.includes(editData.category) && (
+                          <option value={editData.category}>{editData.category} (AI pick)</option>
+                        )}
+                      </select>
                     </div>
                   </div>
 
+                  {/* Amount */}
                   <div className="flex flex-col">
                     <label className="text-sm font-semibold text-gray-700 mb-1">Amount (₹)</label>
                     <div className="relative">
@@ -588,6 +522,7 @@ export default function BillTrackerApp() {
                     </div>
                   </div>
 
+                  {/* Notes */}
                   <div className="flex flex-col">
                     <label className="text-sm font-semibold text-gray-700 mb-1">Additional Notes</label>
                     <textarea
@@ -602,13 +537,16 @@ export default function BillTrackerApp() {
                 </div>
               </div>
 
+              {/* Auto-submit button with progress bar */}
               <button
                 onClick={handleLogToSheet}
                 disabled={isLoading}
-                className={`relative overflow-hidden w-full flex items-center justify-center rounded-xl px-4 py-3 text-center text-base font-semibold text-white transition-all duration-150 shadow-md ${isLoading ? "bg-gray-400 cursor-not-allowed" : "bg-green-600 hover:bg-green-700 hover:shadow-lg"}`}
+                className={`relative overflow-hidden w-full flex items-center justify-center rounded-xl px-4 py-3 text-center text-base font-semibold text-white transition-all duration-150 shadow-md ${
+                  isLoading ? "bg-gray-400 cursor-not-allowed" : "bg-green-600 hover:bg-green-700 hover:shadow-lg"
+                }`}
               >
                 {isAutoSaving && !isLoading && (
-                  <div 
+                  <div
                     className="absolute left-0 top-0 bottom-0 bg-green-500 transition-all duration-1000 ease-linear"
                     style={{ width: `${((5 - countdown) / 5) * 100}%` }}
                   />
@@ -616,45 +554,41 @@ export default function BillTrackerApp() {
                 <span className="relative z-10 flex items-center">
                   {isLoading ? (
                     <><Loader2 className="animate-spin h-5 w-5 mr-3" /> Saving to Sheet...</>
+                  ) : isAutoSaving ? (
+                    "Auto Submitting..."
                   ) : (
-                    isAutoSaving ? "Auto Submitting..." : "Save & Log to Sheet"
+                    "Save & Log to Sheet"
                   )}
                 </span>
               </button>
             </div>
           )}
 
-          {/* --- UPLOAD STATUS MESSAGE --- */}
+          {/* --- STATUS MESSAGE --- */}
           {message && !error && !extractionResult && !isReviewing && (
             <div className="mt-6 p-4 rounded-lg border border-indigo-300 bg-indigo-50 text-indigo-800 text-center shadow-md">
               <p className="text-sm font-medium">{message}</p>
             </div>
           )}
 
-          {/* --- ERROR DISPLAY --- */}
+          {/* --- ERROR --- */}
           {error && (
-            <div
-              className="mt-6 rounded-xl border-2 border-red-300 bg-red-50 p-4 text-red-800 shadow-md"
-              role="alert"
-            >
+            <div className="mt-6 rounded-xl border-2 border-red-300 bg-red-50 p-4 text-red-800 shadow-md" role="alert">
               <p className="font-bold">🚫 Process Failed</p>
               <p className="text-sm mt-1">{error}</p>
             </div>
           )}
 
-          {/* --- FINAL RESULTS DISPLAY --- */}
+          {/* --- SUCCESS RESULTS --- */}
           {extractionResult && uploadResult && logResult && (
-            <div
-              className="mt-6 rounded-xl border-2 border-green-300 bg-green-50 p-5 text-gray-800 shadow-xl"
-              role="alert"
-            >
+            <div className="mt-6 rounded-xl border-2 border-green-300 bg-green-50 p-5 text-gray-800 shadow-xl" role="alert">
               <div className="flex justify-between items-center mb-4 pb-2 border-b border-green-200">
                 <p className="text-lg font-bold text-green-700 flex items-center">
-                  <Tag className="w-5 h-5 mr-2" /> Data Extracted!
+                  <Tag className="w-5 h-5 mr-2" /> Bill Saved!
                 </p>
-                {uploadResult && (
+                <div className="flex gap-3">
                   <a
-                    href={uploadResult.link}
+                    href={logResult.updatedFileLink || uploadResult.link}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-sm font-semibold text-blue-600 hover:text-blue-800 flex items-center underline transition-colors"
@@ -662,8 +596,6 @@ export default function BillTrackerApp() {
                     <Link className="w-4 h-4 mr-1" />
                     View Bill
                   </a>
-                )}
-                {logResult && (
                   <a
                     href={logResult.spreadsheetLink}
                     target="_blank"
@@ -673,38 +605,31 @@ export default function BillTrackerApp() {
                     <Link className="w-4 h-4 mr-1" />
                     View Sheet
                   </a>
-                )}
-              </div>
-              <div className="space-y-1">
-                <DataField
-                  label="Vendor"
-                  value={extractionResult.vendor}
-                  icon={<ShoppingBag className="w-4 h-4" />}
-                />
-                <DataField
-                  label="Date"
-                  value={extractionResult.date}
-                  icon={<Calendar className="w-4 h-4" />}
-                />
-                <DataField
-                  label="Category"
-                  value={extractionResult.category}
-                  icon={<Tag className="w-4 h-4" />}
-                />
-                <DataField
-                  label="Notes"
-                  value={extractionResult.notes}
-                  icon={<Edit className="w-4 h-4" />}
-                />
-                <div className="pt-3">
-                  <DataField
-                    label="Total Amount"
-                    value={extractionResult.amount}
-                    isCurrency={true}
-                    icon={<Rupee className="w-4 h-4" />}
-                  />
                 </div>
               </div>
+
+              {logResult.updatedFileName && (
+                <p className="text-xs text-gray-500 mb-3 italic">
+                  📁 Saved as <strong>{logResult.updatedFileName}</strong> in Drive
+                </p>
+              )}
+
+              <div className="space-y-1">
+                <DataField label="Vendor" value={extractionResult.vendor} icon={<ShoppingBag className="w-4 h-4" />} />
+                <DataField label="Date" value={extractionResult.date} icon={<Calendar className="w-4 h-4" />} />
+                <DataField label="Category" value={extractionResult.category} icon={<Tag className="w-4 h-4" />} />
+                <DataField label="Notes" value={extractionResult.notes} icon={<Edit className="w-4 h-4" />} />
+                <div className="pt-3">
+                  <DataField label="Total Amount" value={extractionResult.amount} isCurrency={true} icon={<Rupee className="w-4 h-4" />} />
+                </div>
+              </div>
+
+              <button
+                onClick={clearFile}
+                className="mt-5 w-full py-2 rounded-xl text-sm font-semibold text-indigo-600 border border-indigo-300 hover:bg-indigo-50 transition-colors"
+              >
+                Upload Another Bill
+              </button>
             </div>
           )}
         </div>
